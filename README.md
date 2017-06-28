@@ -1,0 +1,103 @@
+# NAME
+
+AnyEvent::Log::AIO - Write filesystem logs with IO::AIO
+
+# SYNOPSIS
+
+```perl
+use AnyEvent::Log::AIO;
+my $logger = AnyEvent::Log::AIO->new(
+    file => "/var/log/aio.log",
+
+    # File open flags (Fcntl) and mode
+    flags => O_RDWR|O_CREAT|O_APPEND, # default
+    mode  => oct('0644'), # default
+
+    # retry interval in seconds, undef to disable
+    retry => 0.333, # default
+
+    # Format of date (extended strftime, see Time::Moment)
+    date_format => '%Y-%m-%dT%H:%M:%S%3f', # default
+
+    # Format of line (%d = date, %m = message)
+    line_format => "%d %m\n", # default
+
+    # String for replacing \n in messages. undef disables feature
+    map_lf   => "\t", # default
+
+    # List separator for non-sprintf like messages (like $")
+    list_sep => " ", # default
+
+    # Internal buffer to keep messages during maintenance (rotate or inactivity)
+    buffer => 1000, # default
+
+    # When file opened
+    on_open  => sub { my ($logger) = @_; },
+
+    # When failed to open file
+    on_error => sub { my ($logger, $reason) = @_; },
+    
+    # When write buffer became empty after writing data
+    on_drain => sub { my ($logger) = @_; },
+);
+
+# Just after object creating file gets opened.
+# You may delay it by passing delay => 1 and then call
+
+$logger->open();
+
+# Single message could be written. Callback is mandatory (dies otherwise).
+$logger->log("some message", sub {
+    my ($status, $error) = @_;
+    if ($status) {
+        # message written
+    }
+    else {
+        warn "Failed to write: $error";
+    }
+});
+
+# Or sprintf format (except cb, of course ;)
+$logger->log("some message: %s", "sprintf format", sub {
+    my ($status, $error) = @_;
+    if ($status) {
+        # message written
+    }
+    else {
+        warn "Failed to write: $error";
+    }
+});
+
+# If first arg have no '%', then consider as a list of args
+$logger->log("some message: ", "common", "args", "list", sub {
+    my ($status, $error) = @_;
+    if ($status) {
+        # message written
+    }
+    else {
+        warn "Failed to write: $error";
+    }
+});
+
+# Any time it is possible to call
+
+$logger->rotate()
+
+# This will cause logger to reopen log file without loosing messages.
+# (Wait for any message to finish writing, then close fd, reopen file and continue writing to new)
+```
+
+# SEE ALSO
+
+[AE::log](https://metacpan.org/pod/AE::log)
+
+# AUTHOR
+
+Mons Anderson, <mons@cpan.org>
+
+# COPYRIGHT AND LICENSE
+
+Copyright 2017 Mons Anderson
+
+This program is free software; you can redistribute it and/or modify it
+under the same terms as Perl itself.

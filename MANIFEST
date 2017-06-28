@@ -1,0 +1,13 @@
+Changes
+lib/AnyEvent/Log/AIO.pm
+Makefile.PL
+MANIFEST
+MANIFEST.SKIP
+MYMETA.json
+MYMETA.yml
+README
+t/AnyEvent-Log-AIO.t
+xxt/date_tests.pl
+xxt/errors.pl
+xxt/rotate.pl
+xxt/test.pl
