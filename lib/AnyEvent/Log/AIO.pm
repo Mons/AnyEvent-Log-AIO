@@ -96,7 +96,7 @@ sub _open {
 		if ($self->_fh) {
 			warn "Open while have _fh";
 			aio_close $self->_fh, sub {
-				shift of $self->_error("Failed to close ".$self->file.": $!");
+				shift or $self->_error("Failed to close ".$self->file.": $!");
 			};
 		}
 		if ($fh) {
