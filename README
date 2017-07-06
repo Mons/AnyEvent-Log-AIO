@@ -78,10 +78,11 @@ SYNOPSIS
 
         # Any time it is possible to call
 
-        $logger->rotate()
+        $logger->reopen();
 
         # This will cause logger to reopen log file without loosing messages.
         # (Wait for any message to finish writing, then close fd, reopen file and continue writing to new)
+        # Use this after rotating logs
 
 SEE ALSO
     AE::log
