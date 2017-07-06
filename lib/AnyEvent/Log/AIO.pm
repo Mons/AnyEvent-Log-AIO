@@ -2,13 +2,21 @@ package AnyEvent::Log::AIO;
 
 use 5.010000;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 use AnyEvent::AIO;
 use IO::AIO;
 use Fcntl qw(O_RDWR O_CREAT O_APPEND);
+use Scalar::Util qw(weaken);
 use Time::Moment;
 use Carp;
+
+use constant {
+	MSG => 0,
+	TM  => 1,
+	CB  => 2,
+};
+our $PAGESIZE => 4096;
 
 # use DDP;
 
@@ -19,6 +27,7 @@ no warnings 'uninitialized';
 # Buffer messages, until emit discard callbacks
 has 'buffer', is => 'rw', default => 1000;
 has 'delay', is => 'rw', default => 0;
+has 'timeout', is => 'rw', default => 5;
 
 has 'file',   is => 'rw', required => 1;
 has 'flags',  is => 'rw', required => 1, default => O_RDWR|O_CREAT|O_APPEND;
@@ -40,7 +49,7 @@ has 'on_open', is => 'rw',
 has 'on_drain', is => 'rw',
 	trigger => sub { UNIVERSAL::isa($_[1], 'CODE') || UNIVERSAL::can($_[1], '(&{}') or croak "Callback required for 'on_drain', got $_[1]"; };
 has 'on_error', is => 'rw',
-	default => sub { warn "@_"; },
+	default => sub { sub { carp "@_"; } },
 	trigger => sub { UNIVERSAL::isa($_[1], 'CODE') || UNIVERSAL::can($_[1], '(&{}') or croak "Callback required for 'on_error', got $_[1]"; };
 
 
@@ -67,9 +76,11 @@ has '_wq', is => 'ro', default => sub {+[]};
 has '_elapsed', is => 'rw', default => 0;
 has '_waited', is => 'rw', default => 0;
 has '_drain_rotate', is => 'rw';
+has '_timer', is => 'rw';
 
 sub BUILD {
 	my $self = shift;
+	# use DDP;
 	# p $self;
 	$self->_open unless $self->delay;
 }
@@ -90,13 +101,15 @@ sub _open {
 	my $self = shift;
 	my $cb = pop;
 	delete $self->{_retry};
+	# warn "opening log ".$self->file;
 	aio_open $self->file, $self->flags, $self->mode, sub {
 		my $fh = shift;
 		my $err = "$!";
 		if ($self->_fh) {
 			warn "Open while have _fh";
 			aio_close $self->_fh, sub {
-				shift or $self->_error("Failed to close ".$self->file.": $!");
+				# warn "closed: @_";
+				(shift >= 0) or $self->_error("Failed to close ".$self->file.": $!");
 			};
 		}
 		if ($fh) {
@@ -104,7 +117,7 @@ sub _open {
 			$self->on_open && $self->on_open->($self, $fh);
 			$cb && $cb->(1);
 			if (@{ $self->_wq }) {
-				warn "Call _drain after (re)open";
+				# warn "Call _drain after (re)open";
 				$self->_drain;
 			};
 		}
@@ -121,21 +134,33 @@ sub _open {
 	return;
 }
 
-sub open {
+sub open :method {
 	my $self = shift;
 	$self->_open(@_);
 }
 
 sub _close {
 	my $self = shift;
+	my $cb = shift;
 	if ($self->_fh) {
 		aio_close $self->_fh, sub {
-			(shift >= 0) or $self->_error("Failed to close ".$self->file.": $!");
+			if (shift >= 0) {
+				$cb && $cb->(1);
+			} else {
+				my $err = "$!";
+				$self->_error("Failed to close ".$self->file.": $err");
+				$cb && $cb->(undef, $err);
+			}
 		};
 	}
 }
 
-sub rotate {
+sub close {
+	my $self = shift;
+	$self->_close(@_);
+}
+
+sub reopen {
 	my $self = shift;
 	my $cb = pop;
 	$self->_rotating(1);
@@ -143,7 +168,7 @@ sub rotate {
 		my $fh = delete $self->{_fh};
 		warn "Actual rotate $fh";
 		aio_close $fh, sub {
-			warn "closed: @_";
+			# warn "closed: @_";
 			(shift >= 0) or $self->_error("Failed to close ".$self->file.": $!");
 			$self->_open(sub {
 				$self->_rotating(0);
@@ -237,26 +262,59 @@ sub log :method {
 		};
 		return;
 	}
+	print $msg;
+	utf8::encode $msg if utf8::is_utf8 $msg;
+	
+	# return $cb->();
 
 	push @{ $self->_wq }, [$msg,$tm,$cb];
+	if ($self->timeout and not $self->{_timer}) {
+		{
+			weaken(my $wself = $self);
+			$self->{_timer} = AE::timer $self->timeout, 0, sub {
+				return unless $wself;
+				$wself->_timeout();
+			};
+		}
+	}
 	return if $self->_rotating;
 	return unless $self->_fh;
 	$self->_drain;
 	return;
 }
 
-use constant {
-	MSG => 0,
-	TM  => 1,
-	CB  => 2,
-
-	PAGESIZE => 4096,
-};
+sub _timeout {
+	my $self = shift;
+	my $now = Time::Moment->now;
+	my @fired;
+	while (@{$self->_wq} and $self->_wq->[0][TM]->delta_microseconds($now) > $self->timeout * 1e6) {
+		push @fired, shift @{$self->_wq};
+	}
+	for my $t (@fired) {
+		$t->[CB]->(undef, "Write timed out ".($self->_fh ? "($self->{file})" : "(no handle)"));
+	}
+	if (@{$self->_wq}) {
+		my $remaining = Time::Moment->now->delta_microseconds(
+			$self->_wq->[0][TM]->plus_seconds($self->timeout)
+		);
+		{
+			weaken(my $wself = $self);
+			$self->{_timer} = AE::timer $self->timeout, 0, sub {
+				return unless $wself;
+				$wself->_timeout();
+			};
+		}
+	}
+	else {
+		delete $self->{_timer};
+	}
+	return;
+}
 
 sub _drain {
 	my $self = shift;
 	return unless $self->_fh;
-	return warn "Already draining" if $self->_draining;
+	return if $self->_draining;
 	$self->_draining(1);
 
 	my $wq = $self->_wq;
@@ -287,7 +345,7 @@ sub _drain {
 		my $i;
 
 		for ($i=1; $i< @$wq; $i++) {
-			if (length ($wbuf) + length $wq->[$i][MSG] > PAGESIZE*2) {
+			if (length ($wbuf) + length $wq->[$i][MSG] > $PAGESIZE*2) {
 				last;
 			}
 			$wbuf .= $wq->[$i][MSG];
@@ -425,10 +483,11 @@ AnyEvent::Log::AIO - Write filesystem logs with IO::AIO
 
     # Any time it is possible to call
 
-    $logger->rotate()
+    $logger->reopen();
 
     # This will cause logger to reopen log file without loosing messages.
     # (Wait for any message to finish writing, then close fd, reopen file and continue writing to new)
+    # Use this after rotating logs
 
 
 =head1 SEE ALSO

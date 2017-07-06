@@ -1,5 +1,5 @@
 Name:           perl-AnyEvent-Log-AIO
-Version:        0.01
+Version:        0.02
 Release:        1%{?dist}
 Summary:        AnyEvent::Log::AIO Perl module
 License:        GPL+ or Artistic
